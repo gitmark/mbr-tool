@@ -10,6 +10,8 @@
 #include <sstream>
 #include <fstream>
 #include <iomanip>
+#include <map>
+#include <algorithm>
 
 using namespace std;
 
@@ -42,6 +44,20 @@ inline char cleanChar(char c) {
     return '.';
 }
 
+class ColorNode {
+public:
+    ColorNode (int addr = 0, const string &color = "", const string &label = "")
+    : addr(addr), color(color), label(label) {}
+    
+    int addr;
+    string color;
+    string label;
+};
+
+bool sortClassNodes(const ColorNode &n1, const ColorNode &n2) {
+    return n1.addr < n2.addr;
+}
+
 class App {
 public:
     
@@ -56,6 +72,7 @@ public:
         ss << "  -c, --color      Output colored text to console.\n";
         ss << "  -t, --tilde      Use tilde to mask extra data.\n";
         ss << "  -b, --blank      Use blank to mask extra data.\n";
+        ss << "  -B, --blocks     Display separate blocks.\n";
         ss << "\n";
         
         _usage = ss.str();
@@ -73,13 +90,14 @@ public:
             { "tilde",      no_argument,            nullptr,        't' },
             { "blank",      no_argument,            nullptr,        'b' },
             { "file",       required_argument,      nullptr,        'f' },
+            { "block",      required_argument,      nullptr,        'B' },
             { nullptr,      0,                      nullptr,        0   }
         };
         
         int option_index = 0;
         
         while (true) {
-            int opt = getopt_long(argc, argv, "+:vhctbf:", long_options.data(), &option_index);
+            int opt = getopt_long(argc, argv, "+:vhctbf:B", long_options.data(), &option_index);
             
             if (opt == -1)
                 break;
@@ -120,6 +138,10 @@ public:
                     _filename = optarg;
                     break;
                     
+                case 'B':
+                    _separateBlocks = true;
+                    break;
+                    
                 case '?': {
                     charBuf[0] = static_cast<char>(optopt);
                     std::cerr << "error: bad option: " << charBuf.data() << "\n";
@@ -152,6 +174,86 @@ public:
             std::cout << "version " << _versionNum << " " << _devStage << "\n";
         
         return rc;
+    }
+    
+    void dumpBuf(char *buf, size_t start, size_t end, const string &label, const map<int,ColorNode> &colorMap ) {
+        
+        if (_color) {
+            for (auto p : colorMap) {
+                cout << p.second.color;
+                cout << "          - ";
+                cout << p.second.label << "\n";
+            }
+            cout << "\n";
+            cout << "\033[0m";
+        }
+        
+        const ColorNode *colorNode = &colorMap.at(0);
+        const ColorNode *colorNode2 = &colorMap.at(0);
+        cout << hex << setw(2) << setfill('0') << right << uppercase;
+        
+        size_t bytesPerLine = 16;
+        size_t spaceInterval = 1;
+        size_t spaceInterval2 = 8;
+        size_t addrLength = 8;
+        
+        size_t _lineStart = start/bytesPerLine * bytesPerLine;
+        size_t count = (end + bytesPerLine - 1)/bytesPerLine*bytesPerLine;
+        
+        for (size_t lineStart = _lineStart; lineStart < count; lineStart += bytesPerLine) {
+            size_t lineEnd = lineStart + bytesPerLine;
+            
+            cout << hex << setw(addrLength) << setfill('0') << uppercase << lineStart << "  ";
+            
+            for (size_t i = lineStart; i < lineEnd; ++i) {
+                if ((i != lineStart) && (i % spaceInterval) == 0)
+                    cout << " ";
+                if ((i != lineStart) && (i % spaceInterval2) == 0)
+                    cout << " ";
+                
+                
+                if (colorMap.count(i)) {
+                    colorNode = &colorMap.at(i);;
+                }
+                
+                if (_color) {
+                    cout << colorNode->color;
+                }
+                
+                if (_replaceBytes && (i < start || i >= end))
+                    cout << _byteReplacement;
+                else
+                    cout << setw(2) << setfill('0') <<(unsigned)(unsigned char)buf[i];
+                
+                if (_color)
+                    cout << "\033[0m";
+            }
+            
+            cout << "  |";
+            
+            for (size_t i = lineStart; i < lineEnd; ++i) {
+                
+                if (colorMap.count(i)) {
+                    colorNode2 = &colorMap.at(i);;
+                }
+                
+                if (_color) {
+                    cout << colorNode2->color;
+                }
+                
+                if (_replaceBytes && (i < start || i >= end))
+                    cout << _charReplacement;
+                else
+                    cout << cleanChar(buf[i]);
+                
+                if (_color)
+                    cout << "\033[0m";
+            }
+            
+            cout << "|\n";
+        }
+        
+        cout << "\n";
     }
     
     void dumpBuf(char *buf, size_t start, size_t end, const string &label = "") {
@@ -263,13 +365,25 @@ public:
         
         cout << "\n";
         
-        dumpBuf(vec.data(), 0,      3,      "Jump Instruction");
-        dumpBuf(vec.data(), 3,      11,     "OEM Name");
-        dumpBuf(vec.data(), 11,     101,    "BPB");
-        dumpBuf(vec.data(), 101,    446,    "Code");
-        dumpBuf(vec.data(), 446,    509,    "Partition Table");
-        dumpBuf(vec.data(), 509,    510,    "Physical Drive Number");
-        dumpBuf(vec.data(), 510,    512,    "Boot Signature");
+        if (_separateBlocks) {
+            dumpBuf(vec.data(), 0,      3,      "Jump Instruction");
+            dumpBuf(vec.data(), 3,      11,     "OEM Name");
+            dumpBuf(vec.data(), 11,     101,    "BPB");
+            dumpBuf(vec.data(), 101,    446,    "Code");
+            dumpBuf(vec.data(), 446,    509,    "Partition Table");
+            dumpBuf(vec.data(), 509,    510,    "Physical Drive Number");
+            dumpBuf(vec.data(), 510,    512,    "Boot Signature");
+        } else {
+            map<int,ColorNode> colorMap;
+            colorMap[0] = ColorNode(0,"\033[1;31m", "Jump Instruction");
+            colorMap[3] = ColorNode(3,"\033[1;32m", "OEM Name");
+            colorMap[11] = ColorNode(11,"\033[1;33m", "BPB");
+            colorMap[101] = ColorNode(101,"\033[1;34m", "Code");
+            colorMap[446] = ColorNode(446,"\033[1;35m", "Partition Table");
+            colorMap[509] = ColorNode(509,"\033[1;36m", "Phsucal Drive Number");
+            colorMap[510] = ColorNode(510,"\033[1;37m", "Boot Signature");
+            dumpBuf(vec.data(), 0,      512,      "", colorMap);
+        }
         
         return rc;
     }
@@ -288,6 +402,7 @@ private:
     bool    _replaceBytes = false;
     string  _byteReplacement;
     string  _charReplacement;
+    bool    _separateBlocks = false;
 };
 
 int main(int argc, char **argv) {
